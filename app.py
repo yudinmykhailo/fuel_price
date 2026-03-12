@@ -4,8 +4,8 @@ from flask import Flask
 app = Flask(__name__)
 
 @app.route('/')
-def health_check():
-    return "Bot is alive!", 200
+def health():
+    return "Bot is running", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
