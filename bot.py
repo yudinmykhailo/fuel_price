@@ -1,5 +1,6 @@
 import os
-import cloudscraper
+import requests
+import re
 from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -11,57 +12,46 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 def get_fuel_prices():
-    url = "https://index.minfin.com.ua/ua/markets/fuel/tm/kiev/"
-    # Создаем scraper, который обходит Cloudflare
-    scraper = cloudscraper.create_scraper()
+    # Прямая ссылка на данные информера (регион 9 = Киев)
+    url = "https://vseazs.com/inf.php?reg=9&fuels=00110101"
+    headers = {"User-Agent": "Mozilla/5.0"}
     
     try:
-        response = scraper.get(url, timeout=15)
-        if response.status_code != 200:
-            return f"⚠️ Сайт вернул ошибку {response.status_code}. Возможно, IP заблокирован."
+        response = requests.get(url, headers=headers, timeout=10)
+        # Скрипт возвращает JS-код вида: document.write('HTML_TABLE');
+        # Нам нужно вытащить то, что внутри кавычек
+        html_content = re.search(r"document\.write\('(.*)'\);", response.text)
+        
+        if not html_content:
+            return "❌ Не удалось обработать данные информера."
             
-        soup = BeautifulSoup(response.text, 'html.parser')
+        clean_html = html_content.group(1).replace("\\", "") # Убираем экранирование
+        soup = BeautifulSoup(clean_html, 'html.parser')
         
-        # Ищем таблицу. На Минфине она обычно вложена в div с классом 'm-0' или 'idx-pay'
-        table = soup.find('table', class_='idx-pay')
-        
-        if not table:
-            # Запасной вариант: ищем любую таблицу с ключевым словом
-            for t in soup.find_all('table'):
-                if 'А-95' in t.text:
-                    table = t
-                    break
-        
-        if not table:
-            print("Debug: Table not found. Page content snippet:", response.text[:500])
-            return "❌ Сайт защищен или изменил структуру. Пробуем другой метод..."
-
-        rows = table.find_all('tr')[1:]
-        text = "⛽️ **Цены на топливо в Киеве:**\n\n"
-        count = 0
+        # На vseazs данные лежат в таблице
+        rows = soup.find_all('tr')
+        text = "⛽️ **Цены на АЗС в Киеве (vseazs):**\n\n"
         
         for row in rows:
             cols = row.find_all('td')
+            # Обычно в информере: 0 - бренд, 1 - тип топлива, 2 - цена
             if len(cols) >= 3:
                 brand = cols[0].text.strip()
-                a95 = cols[1].text.strip().replace('\xa0', ' ')
-                diesel = cols[3].text.strip().replace('\xa0', ' ') if len(cols) > 3 else "-"
+                fuel_type = cols[1].text.strip()
+                price = cols[2].text.strip()
                 
-                if brand and a95 and a95 != '-':
-                    text += f"📍 **{brand}**\n95-й: `{a95}` | ДТ: `{diesel}`\n\n"
-                    count += 1
+                if price and price != '0.00':
+                    text += f"📍 **{brand}**\n{fuel_type}: `{price} грн`\n\n"
         
-        if count == 0:
-            return "❌ Цены временно не найдены в таблице."
-            
-        return text
+        return text if len(text) > 50 else "❌ Данные в информере временно пусты."
+        
     except Exception as e:
-        print(f"Scraper error: {e}")
-        return "⚠️ Ошибка при обходе защиты сайта."
+        print(f"Informer error: {e}")
+        return "⚠️ Ошибка при обращении к vseazs.com"
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("Бот запущен! Нажми /prices для получения цен (через обход защиты).")
+    await message.answer("Бот настроен на официальный информер vseazs! Нажми /prices.")
 
 @dp.message(Command("prices"))
 async def prices(message: types.Message):
