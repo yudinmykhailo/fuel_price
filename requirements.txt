@@ -2,3 +2,5 @@ pyTelegramBotAPI
 beautifulsoup4
 requests
 tabulate
+flask
+gunicorn
