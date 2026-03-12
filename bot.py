@@ -11,40 +11,48 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 def get_fuel_prices():
-    # Используем Минфин для Киева
+    # Актуальная ссылка на таблицу цен по Киеву
     url = "https://index.minfin.com.ua/ua/markets/fuel/tm/kiev/"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Ищем таблицу с ценами
-        table = soup.find('table', class_='idx-pay')
+        # Ищем таблицу, которая содержит слово 'А-95'
+        table = None
+        for t in soup.find_all('table'):
+            if 'А-95' in t.text:
+                table = t
+                break
+        
         if not table:
-            return "❌ Не удалось найти таблицу с ценами на сайте."
+            return "❌ Не удалось найти таблицу с актуальными ценами."
 
         rows = table.find_all('tr')[1:] # Пропускаем заголовок
         
-        text = "⛽️ **Цены на АЗС в Киеве (Минфин):**\n\n"
+        text = "⛽️ **Цены на топливо в Киеве:**\n\n"
+        count = 0
         for row in rows:
             cols = row.find_all('td')
             if len(cols) >= 3:
-                # Название сети часто в первом <td> внутри ссылки или просто текстом
                 brand = cols[0].text.strip()
-                a95 = cols[1].text.strip()
-                diesel = cols[3].text.strip() if len(cols) > 3 else "н/д"
+                a95 = cols[1].text.strip().replace('\xa0', ' ')
+                diesel = cols[3].text.strip().replace('\xa0', ' ') if len(cols) > 3 else "-"
                 
-                # Добавляем только если есть название бренда
-                if brand:
+                if brand and a95:
                     text += f"📍 **{brand}**\n95-й: `{a95}` | ДТ: `{diesel}`\n\n"
+                    count += 1
         
-        return text if len(text) > 50 else "❌ Данные временно отсутствуют."
+        if count == 0:
+            return "❌ Данные на сайте временно недоступны."
+            
+        return text
     except Exception as e:
-        print(f"Error: {e}")
-        return "⚠️ Ошибка связи с сервером цен. Попробуйте через 5 минут."
+        print(f"Parsing error: {e}")
+        return "⚠️ Ошибка при получении данных с сайта."
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
