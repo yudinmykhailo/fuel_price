@@ -1,5 +1,5 @@
 import os
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -11,30 +11,35 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 def get_fuel_prices():
-    # Актуальная ссылка на таблицу цен по Киеву
     url = "https://index.minfin.com.ua/ua/markets/fuel/tm/kiev/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    }
+    # Создаем scraper, который обходит Cloudflare
+    scraper = cloudscraper.create_scraper()
+    
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
+        response = scraper.get(url, timeout=15)
+        if response.status_code != 200:
+            return f"⚠️ Сайт вернул ошибку {response.status_code}. Возможно, IP заблокирован."
+            
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Ищем таблицу, которая содержит слово 'А-95'
-        table = None
-        for t in soup.find_all('table'):
-            if 'А-95' in t.text:
-                table = t
-                break
+        # Ищем таблицу. На Минфине она обычно вложена в div с классом 'm-0' или 'idx-pay'
+        table = soup.find('table', class_='idx-pay')
         
         if not table:
-            return "❌ Не удалось найти таблицу с актуальными ценами."
-
-        rows = table.find_all('tr')[1:] # Пропускаем заголовок
+            # Запасной вариант: ищем любую таблицу с ключевым словом
+            for t in soup.find_all('table'):
+                if 'А-95' in t.text:
+                    table = t
+                    break
         
+        if not table:
+            print("Debug: Table not found. Page content snippet:", response.text[:500])
+            return "❌ Сайт защищен или изменил структуру. Пробуем другой метод..."
+
+        rows = table.find_all('tr')[1:]
         text = "⛽️ **Цены на топливо в Киеве:**\n\n"
         count = 0
+        
         for row in rows:
             cols = row.find_all('td')
             if len(cols) >= 3:
@@ -42,21 +47,21 @@ def get_fuel_prices():
                 a95 = cols[1].text.strip().replace('\xa0', ' ')
                 diesel = cols[3].text.strip().replace('\xa0', ' ') if len(cols) > 3 else "-"
                 
-                if brand and a95:
+                if brand and a95 and a95 != '-':
                     text += f"📍 **{brand}**\n95-й: `{a95}` | ДТ: `{diesel}`\n\n"
                     count += 1
         
         if count == 0:
-            return "❌ Данные на сайте временно недоступны."
+            return "❌ Цены временно не найдены в таблице."
             
         return text
     except Exception as e:
-        print(f"Parsing error: {e}")
-        return "⚠️ Ошибка при получении данных с сайта."
+        print(f"Scraper error: {e}")
+        return "⚠️ Ошибка при обходе защиты сайта."
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("Привет! Я мониторю цены на топливо в Киеве. Нажми /prices.")
+    await message.answer("Бот запущен! Нажми /prices для получения цен (через обход защиты).")
 
 @dp.message(Command("prices"))
 async def prices(message: types.Message):
@@ -64,7 +69,7 @@ async def prices(message: types.Message):
     await message.answer(data, parse_mode="Markdown")
 
 async def handle_ping(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="OK")
 
 async def start_web_server():
     app = web.Application()
