@@ -1,78 +1,116 @@
 import os
 import requests
-import re
+import asyncio
 from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-import asyncio
 from aiohttp import web
 
+# Конфигурация из переменных окружения
 TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 def get_fuel_prices():
-    # Прямая ссылка на данные информера (регион 9 = Киев)
+    # Используем информер vseazs (регион 9 = Киев)
     url = "https://vseazs.com/inf.php?reg=9&fuels=00110101"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        # Скрипт возвращает JS-код вида: document.write('HTML_TABLE');
-        # Нам нужно вытащить то, что внутри кавычек
-        html_content = re.search(r"document\.write\('(.*)'\);", response.text)
+        response = requests.get(url, headers=headers, timeout=15)
+        response.encoding = 'utf-8' # Важно для корректного отображения кириллицы
         
-        if not html_content:
-            return "❌ Не удалось обработать данные информера."
-            
-        clean_html = html_content.group(1).replace("\\", "") # Убираем экранирование
-        soup = BeautifulSoup(clean_html, 'html.parser')
+        raw_text = response.text
+        if "document.write" not in raw_text:
+            return "❌ Ошибка: Информер вернул пустой ответ или заблокирован."
+
+        # Извлекаем HTML-контент из document.write('...')
+        try:
+            start = raw_text.find("'") + 1
+            end = raw_text.rfind("'")
+            html_segment = raw_text[start:end]
+            # Очищаем экранированные символы
+            html_segment = html_segment.replace("\\/", "/").replace("\\'", "'").replace('\\"', '"')
+        except Exception:
+            return "❌ Ошибка при обработке структуры данных."
+
+        soup = BeautifulSoup(html_segment, 'html.parser')
         
-        # На vseazs данные лежат в таблице
-        rows = soup.find_all('tr')
+        # Извлекаем все ячейки таблицы
+        cells = [td.text.strip() for td in soup.find_all('td') if td.text.strip()]
+        
+        if not cells:
+            return "❌ Данные внутри информера не найдены."
+
         text = "⛽️ **Цены на АЗС в Киеве (vseazs):**\n\n"
+        count = 0
         
-        for row in rows:
-            cols = row.find_all('td')
-            # Обычно в информере: 0 - бренд, 1 - тип топлива, 2 - цена
-            if len(cols) >= 3:
-                brand = cols[0].text.strip()
-                fuel_type = cols[1].text.strip()
-                price = cols[2].text.strip()
+        # Данные в информере идут тройками: Сеть | Тип топлива | Цена
+        for i in range(0, len(cells), 3):
+            if i + 2 < len(cells):
+                brand = cells[i]
+                fuel = cells[i+1]
+                price = cells[i+2]
                 
-                if price and price != '0.00':
-                    text += f"📍 **{brand}**\n{fuel_type}: `{price} грн`\n\n"
+                # Фильтруем пустые значения
+                if price and price not in ['-', '0.00', '0']:
+                    text += f"📍 **{brand}**\n{fuel}: `{price} грн`\n\n"
+                    count += 1
         
-        return text if len(text) > 50 else "❌ Данные в информере временно пусты."
+        if count == 0:
+            return "❌ Актуальных цен на данный момент не найдено."
+            
+        return text
         
     except Exception as e:
-        print(f"Informer error: {e}")
-        return "⚠️ Ошибка при обращении к vseazs.com"
+        print(f"Detailed Error: {e}")
+        return "⚠️ Ошибка связи с сервером цен."
 
+# Обработчики команд Telegram
 @dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer("Бот настроен на официальный информер vseazs! Нажми /prices.")
+async def start_handler(message: types.Message):
+    await message.answer(
+        "👋 Привет! Я бот для мониторинга цен на топливо в Киеве.\n\n"
+        "Нажми /prices, чтобы получить актуальные данные."
+    )
 
 @dp.message(Command("prices"))
-async def prices(message: types.Message):
+async def prices_handler(message: types.Message):
+    # Отправляем уведомление, что мы ищем данные (чтобы пользователь не скучал)
+    wait_message = await message.answer("⏳ Запрашиваю данные, подождите...")
+    
     data = get_fuel_prices()
+    
+    # Удаляем сообщение об ожидании и присылаем результат
+    await wait_message.delete()
     await message.answer(data, parse_mode="Markdown")
 
+# Веб-сервер для "здоровья" Render (Health Check)
 async def handle_ping(request):
-    return web.Response(text="OK")
+    return web.Response(text="Bot is alive!")
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle_ping)
     runner = web.AppRunner(app)
     await runner.setup()
+    # Render автоматически назначает порт через переменную PORT
     port = int(os.getenv("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
+# Главная функция запуска
 async def main():
-    await start_web_server()
-    await dp.start_polling(bot)
+    # Запускаем веб-сервер и бота параллельно
+    await asyncio.gather(
+        start_web_server(),
+        dp.start_polling(bot)
+    )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("Bot stopped")
